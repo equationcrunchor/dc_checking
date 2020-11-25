@@ -16,6 +16,7 @@ network = TemporalNetwork([c1, c2, c3, c4, c5, c6])
 # DC Checker using Bucket Elimination
 checker = DCCheckerBE(network)
 controllable, conflict = checker.is_controllable(visualize=False, visualize_conflict=False)
+print(type(conflict[0][0][0]))
 print(controllable, conflict)
 
 # DC checker using MILP
