@@ -3,6 +3,8 @@ from gurobipy import GRB
 from uuid import uuid4
 
 MAX_NUMERIC_BOUND = 100000
+ROUND_DIGITS = 3
+NUMERIC_STABLE_EPSILON = 0.0001
 
 
 class Relaxation:
@@ -10,8 +12,33 @@ class Relaxation:
         self.sol = sol
         self.objective_value = objective_value
 
+    def __str__(self):
+        return f"<Relaxation: {self.sol}, Objective: {self.objective_value}>"
 
-def compute_relaxation(conflicts, relaxation_var):
+    def __repr__(self):
+        return f"Relaxation({self.sol}, {self.objective_value})"
+
+    def __add__(self, other):
+        new_sol = self.sol.copy()
+        for constraint, boundtype in other.sol.keys():
+            if (constraint, boundtype) in new_sol.keys():
+                new_sol[(constraint, boundtype)] = max(new_sol[(constraint, boundtype)], other.sol[new_sol[(constraint, boundtype)]])
+        new_cost = 0
+        for constraint, boundtype in new_sol.keys():
+            relax_amount = new_sol[(constraint, boundtype)]
+            if boundtype == 'LB-':
+                coeff = constraint.lb_lin_cost
+            elif boundtype == 'UB+':
+                coeff = constraint.ub_lin_cost
+            new_cost += coeff * relax_amount
+
+        return Relaxation(new_sol, new_cost)
+
+    def __eq__(self, other):
+        return self.sol == other.sol
+
+
+def compute_relaxation(conflicts, relaxation_var=None):
 
     # Create a new model
     m = gp.Model('relaxation')
@@ -21,7 +48,7 @@ def compute_relaxation(conflicts, relaxation_var):
     var_map = {}
 
     # Add market objectives from master
-    objective_expr = gp.QuadExpr()
+    objective_expr = gp.LinExpr()
     # add_market_objectives_to_objective_expr(m, objective_expr, relaxation_var, price_vector, var_map)
 
     # Add conflicts
@@ -38,6 +65,7 @@ def compute_relaxation(conflicts, relaxation_var):
     else:
         objective_value = m.objVal
         sol = {}
+        print(m)
         for var in var_map:
             sol[var] = round(var_map[var].x, ROUND_DIGITS)
         return Relaxation(sol, objective_value)
@@ -83,58 +111,58 @@ class LinearConstraint:
 
 def conflict_to_linconstr(conflict):
     linconstrs = []
-    for inequality in conflict:
-        variable_coeffs = {}
-        total_sum = 0
-        for term in inequality:
-            constraint = term[0]
-            is_relaxable = False
-            # The following should be fixed... I changed how to annotate relaxation in between and
-            # hasn't fixed this
-            if 'lb_relaxable' in constraint.annotation or 'ub_relaxable' in constraint.annotation:
-                constraint.lb_relaxable = constraint.annotation['lb_relaxable']
-                constraint.ub_relaxable = constraint.annotation['ub_relaxable']
-                constraint.lb_quad_cost = constraint.annotation['lb_quad_cost']
-                constraint.ub_quad_cost = constraint.annotation['ub_quad_cost']
-                is_relaxable = True
-            for boundtype in term[1:]:
-                if boundtype == "UB+":
-                    total_sum += constraint.ub
-                    if is_relaxable:
-                        if constraint.ub_relaxable:
-                            if (constraint, "UB+") not in variable_coeffs:
-                                variable_coeffs[(constraint, "UB+")] = 1
-                            else:
-                                variable_coeffs[(constraint, "UB+")] += 1
-                elif boundtype == "UB-":
-                    total_sum += -constraint.ub
-                    if is_relaxable:
-                        if constraint.ub_relaxable:
-                            if (constraint, "UB+") not in variable_coeffs:
-                                variable_coeffs[(constraint, "UB+")] = -1
-                            else:
-                                variable_coeffs[(constraint, "UB+")] -= 1
-                elif boundtype == "LB+":
-                    total_sum += constraint.lb
-                    if is_relaxable:
-                        if constraint.lb_relaxable:
-                            if (constraint, "LB-") not in variable_coeffs:
-                                variable_coeffs[(constraint, "LB-")] = -1
-                            else:
-                                variable_coeffs[(constraint, "LB-")] -= 1
-                elif boundtype == "LB-":
-                    total_sum += -constraint.lb
-                    if is_relaxable:
-                        if constraint.lb_relaxable:
-                            if (constraint, "LB-") not in variable_coeffs:
-                                variable_coeffs[(constraint, "LB-")] = 1
-                            else:
-                                variable_coeffs[(constraint, "LB-")] += 1
-                else:
-                    raise ValueError
-        linconstr = LinearConstraint(str(uuid4()), variable_coeffs, lb=-total_sum + NUMERIC_STABLE_EPSILON)
-        linconstr.canonicalize()
-        linconstrs.append(linconstr)
+    variable_coeffs = {}
+    total_sum = 0
+    for term in conflict:
+        constraint = term[0]
+        is_relaxable = False
+        # The following should be fixed... I changed how to annotate relaxation in between and
+        # hasn't fixed this
+        if 'lb_relaxable' in constraint.annotation or 'ub_relaxable' in constraint.annotation:
+            constraint.lb_relaxable = constraint.annotation['lb_relaxable']
+            constraint.ub_relaxable = constraint.annotation['ub_relaxable']
+            constraint.lb_lin_cost = constraint.annotation['lb_lin_cost']
+            constraint.ub_lin_cost = constraint.annotation['ub_lin_cost']
+        if hasattr(constraint, "lb_relaxable") or hasattr(constraint, "ub_relaxable"):
+            is_relaxable = True
+        for boundtype in term[1:]:
+            if boundtype == "UB+":
+                total_sum += constraint.ub
+                if is_relaxable:
+                    if constraint.ub_relaxable:
+                        if (constraint, "UB+") not in variable_coeffs:
+                            variable_coeffs[(constraint, "UB+")] = 1
+                        else:
+                            variable_coeffs[(constraint, "UB+")] += 1
+            elif boundtype == "UB-":
+                total_sum += -constraint.ub
+                if is_relaxable:
+                    if constraint.ub_relaxable:
+                        if (constraint, "UB+") not in variable_coeffs:
+                            variable_coeffs[(constraint, "UB+")] = -1
+                        else:
+                            variable_coeffs[(constraint, "UB+")] -= 1
+            elif boundtype == "LB+":
+                total_sum += constraint.lb
+                if is_relaxable:
+                    if constraint.lb_relaxable:
+                        if (constraint, "LB-") not in variable_coeffs:
+                            variable_coeffs[(constraint, "LB-")] = -1
+                        else:
+                            variable_coeffs[(constraint, "LB-")] -= 1
+            elif boundtype == "LB-":
+                total_sum += -constraint.lb
+                if is_relaxable:
+                    if constraint.lb_relaxable:
+                        if (constraint, "LB-") not in variable_coeffs:
+                            variable_coeffs[(constraint, "LB-")] = 1
+                        else:
+                            variable_coeffs[(constraint, "LB-")] += 1
+            else:
+                raise ValueError
+    linconstr = LinearConstraint(str(uuid4()), variable_coeffs, lb=-total_sum + NUMERIC_STABLE_EPSILON)
+    linconstr.canonicalize()
+    linconstrs.append(linconstr)
     return linconstrs
 
 def add_conflicts_to_model(m, objective_expr, conflicts, var_map):
@@ -162,13 +190,12 @@ def add_conflicts_to_model(m, objective_expr, conflicts, var_map):
                     # TODO: add linear cost too
                     constraint, boundtype = var
                     if boundtype == 'UB+' or boundtype == 'UB-':
-                        assert('ub_quad_cost' in constraint.annotation)
-                        objective_expr.add(gp_var * gp_var, constraint.annotation['ub_quad_cost'])
+                        objective_expr.add(gp_var, constraint.ub_lin_cost)
                     elif boundtype == 'LB+' or boundtype == 'LB-':
-                        assert('lb_quad_cost' in constraint.annotation)
-                        objective_expr.add(gp_var * gp_var, constraint.annotation['lb_quad_cost'])
+                        objective_expr.add(gp_var, constraint.lb_lin_cost)
                     else:
                         raise ValueError
+                    m.addConstr(gp_var >= 0)
                 coeff_var.append((float(coeff), var_map[var]))
             linexpr = gp.LinExpr(coeff_var)
             assert(linconstr.lb is None or linconstr.ub is None)
@@ -186,3 +213,46 @@ def add_conflicts_to_model(m, objective_expr, conflicts, var_map):
 
         # Increment conflict index
         conflict_ind += 1
+
+
+if __name__ == '__main__':
+    from dc_checking.temporal_network import TemporalNetwork, SimpleContingentTemporalConstraint, SimpleTemporalConstraint
+    from dc_checking.dc_milp import DCCheckerMILP
+    from dc_checking.dc_be import DCCheckerBE
+    from compute_relaxation import *
+
+    # Controllable
+    # c1 = SimpleContingentTemporalConstraint('e1', 'e5', 15, 18.8554, 'c1')
+    # Uncontrollable
+    c1 = SimpleContingentTemporalConstraint('e1', 'e5', 0.6294, 18.8554, 'c1')
+    c2 = SimpleTemporalConstraint('e1', 'e2', 1, 100, 'c2')
+    c3 = SimpleTemporalConstraint('e2', 'e5', 0, 100, 'c3')
+    c4 = SimpleTemporalConstraint('e2', 'e3', 1, 100, 'c4')
+    c5 = SimpleTemporalConstraint('e3', 'e4', 1.5, 100, 'c5')
+    c6 = SimpleTemporalConstraint('e1', 'e4', 1, 3.5, 'c6')
+    network = TemporalNetwork([c1, c2, c3, c4, c5, c6])
+    c1.annotation['lb_relaxable'] = True
+    c1.annotation['lb_lin_cost'] = 100
+    c1.annotation['ub_relaxable'] = True
+    c1.annotation['ub_lin_cost'] = 100
+    c2.annotation['lb_relaxable'] = False
+    c2.annotation['lb_lin_cost'] = 100
+    c2.annotation['ub_relaxable'] = False
+    c2.annotation['ub_lin_cost'] = 100
+    c3.annotation['lb_relaxable'] = True
+    c3.annotation['lb_lin_cost'] = 100
+    c3.annotation['ub_relaxable'] = True
+    c3.annotation['ub_lin_cost'] = 100
+    c6.annotation['lb_relaxable'] = True
+    c6.annotation['lb_lin_cost'] = 100
+    c6.annotation['ub_relaxable'] = True
+    c6.annotation['ub_lin_cost'] = 100
+
+    # DC Checker using Bucket Elimination
+    checker = DCCheckerBE(network)
+    controllable, conflict = checker.is_controllable(visualize=False, visualize_conflict=False)
+    print(controllable, conflict)
+    if not controllable:
+        relaxation = compute_relaxation(conflict)
+        if relaxation is not None:
+            print(relaxation)

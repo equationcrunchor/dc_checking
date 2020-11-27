@@ -54,36 +54,6 @@ def choose_variable_to_split_on(assignments, decision_variables):
     return list(vars_unassigned)[0]
 
 
-def split_on_variable(assignments, variable):
-    """ Split on variable, returning a list of neighboring states.
-
-    Input: assignments - a frozenset of Assignment objects representing a partial assignment
-           variable - a variable, not represented by an Assignment in assignments, on
-                      which to split via its domainv values.
-
-    Output: A list of frozensets of Assignment objects, representing a list of neighboring
-            states.
-    """
-    neighbors = [(assignments | frozenset([variable.get_assignment(di)])) for di in variable.domain]
-    return neighbors
-
-
-def split_on_conflict(assignments, conflict):
-    """ Split on conflict, returning a list of neighboring states.
-
-    Input: assignments - a frozenset of Assignment objects representing a partial assignment
-           conflict - a frozenset of Assignment objects representing a conflict
-
-    Output: A list of frozensets of Assignment objects, representing a list of neighboring
-            states.
-    """
-
-    constituent_kernels = generate_constituent_kernels(conflict)
-    neighbors = [(assignments | frozenset([ck])) for ck in constituent_kernels]
-    neighbors = [a for a in neighbors if is_self_consistent(a)]
-    return neighbors
-
-
 class TPNConstraint(SimpleTemporalConstraint):
     def __init__(self, s, e, label=None, lb=None, ub=None, name=None):
         super().__init__(s, e, lb=lb, ub=ub, name=name)
@@ -112,6 +82,11 @@ class TPNConstraint(SimpleTemporalConstraint):
             for literal in clause.literals:
                 variables.add(literal.atom.var)
         return variables
+
+    def copy(self):
+        copy = cls(self.s, self.e, self.str_label, self.lb, self.ub, self.name)
+        copy.label = self.label
+        return copy
 
 
 class TPNSolver(Problem):
@@ -152,7 +127,36 @@ class TPNSolver(Problem):
         self.queue = [(p, a) for (p, a) in self.queue if not manifests_conflict(a, conflict)]
         heapq.heapify(self.queue)
 
-    def conflict_directed_a_star(self):
+    def split_on_variable(self, assignments, variable):
+        """ Split on variable, returning a list of neighboring states.
+
+        Input: assignments - a frozenset of Assignment objects representing a partial assignment
+               variable - a variable, not represented by an Assignment in assignments, on
+                          which to split via its domainv values.
+
+        Output: A list of frozensets of Assignment objects, representing a list of neighboring
+                states.
+        """
+        neighbors = [(assignments | frozenset([variable.get_assignment(di)])) for di in variable.domain]
+        return neighbors
+
+
+    def split_on_conflict(self, assignments, conflict):
+        """ Split on conflict, returning a list of neighboring states.
+
+        Input: assignments - a frozenset of Assignment objects representing a partial assignment
+               conflict - a frozenset of Assignment objects representing a conflict
+
+        Output: A list of frozensets of Assignment objects, representing a list of neighboring
+                states.
+        """
+
+        constituent_kernels = generate_constituent_kernels(conflict)
+        neighbors = [(assignments | frozenset([ck])) for ck in constituent_kernels]
+        neighbors = [a for a in neighbors if is_self_consistent(a)]
+        return neighbors
+
+    def run(self):
         """ Split on conflict, returning a list of neighboring states.
 
         Output: An assignment to all decision variables, represented as a frozenset of
@@ -204,11 +208,11 @@ class TPNSolver(Problem):
                 if all(resolves_conflict(assignment, gamma) for gamma in self.known_conflicts):
                     print(" --> Splitting on \033[32mvariable\033[0m")
                     var = choose_variable_to_split_on(assignment, decision_variables)
-                    neighbors = split_on_variable(assignment, var)
+                    neighbors = self.split_on_variable(assignment, var)
                 else:
                     gamma = next(g for g in self.known_conflicts if not(resolves_conflict(assignment, g)))
                     print(" --> Splitting on \033[31mconflict\033[0m] {}".format(gamma))
-                    neighbors = split_on_conflict(assignment, gamma)
+                    neighbors = self.split_on_conflict(assignment, gamma)
 
                 # Add neighbors to the self.queue
                 for neigh in neighbors:
@@ -257,4 +261,4 @@ if __name__ == '__main__':
     prob.add_constraint('path2=not_ok => ~(path_choice=two)')
     for constraint in constraints:
         prob.add_temporal_constraint(constraint)
-    print("Solution:", prob.conflict_directed_a_star())
+    print("Solution:", prob.run())
