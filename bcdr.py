@@ -169,7 +169,7 @@ class BCDRSolver(TPNSolver):
                 neighbors = self.split_on_conflict(assignment, relaxations, resolved_conflicts, current_conflict)
                 # Add neighbors to the self.queue
                 for neigh, relaxation, conflicts in neighbors:
-                    print(" --> Adding {}".format(neigh))
+                    print(" --> Adding {}".format((neigh, relaxation, conflicts)))
                     self.add_to_priority_queue(neigh, decision_variables, relaxation, conflicts)
 
         # If we get here, no assignments found!

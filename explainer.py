@@ -1,27 +1,19 @@
 from bcdr import *
 import copy
 
-def modify_problem(original_problem, new_constraints, new_temporal_constraints):
-    new_prob = copy.deepcopy(original_problem)
-    for constraint in new_constraints:
-        new_prob.add_constraint(constraint)
-    for new_constraint in new_temporal_constraints:
-        new_prob.add_temporal_constraint(new_constraint)
-    return new_prob
-
 # example
 constraints = [
-    TPNConstraint('leave_work', 'arrive_home', None, 0, 180, 'c1'),
-    TPNConstraint('leave_work', 'chin_rest', 'restaurant=chinese', 30, 120, 'c2'),
-    TPNConstraint('leave_work', 'kor_rest', 'restaurant=korean', 10, 120, 'c3'),
-    TPNConstraint('leave_work', 'g_mov_start', None, 40, 45, 'c4'),
-    TPNConstraint('leave_work', 'b_mov_start', None, 60, 65, 'c5'),
-    TPNConstraint('chin_rest', 'g_mov_start', 'movie=good', 30, 60, 'c6'),
-    TPNConstraint('chin_rest', 'b_mov_start', 'movie=bad', 30, 60, 'c7'),
-    TPNConstraint('kor_rest', 'g_mov_start', 'movie=good', 30, 60, 'c8'),
-    TPNConstraint('kor_rest', 'b_mov_start', 'movie=bad', 30, 60, 'c9'),
-    TPNConstraint('g_mov_start', 'arrive_home', None, 90, 120, 'c10'),
-    TPNConstraint('b_mov_start', 'arrive_home', None, 100, 120, 'c11'),
+    RelaxableTPNConstraint('leave_work', 'arrive_home', None, 0, 180, 'c1'),
+    RelaxableTPNConstraint('leave_work', 'chin_rest', 'restaurant=chinese', 30, 120, 'c2', lb_relaxable=False, lb_lin_cost=10000),
+    RelaxableTPNConstraint('leave_work', 'kor_rest', 'restaurant=korean', 10, 120, 'c3'),
+    RelaxableTPNConstraint('leave_work', 'g_mov_start', None, 40, 45, 'c4'),
+    RelaxableTPNConstraint('leave_work', 'b_mov_start', None, 60, 65, 'c5'),
+    RelaxableTPNConstraint('chin_rest', 'g_mov_start', 'movie=good', 30, 60, 'c6'),
+    RelaxableTPNConstraint('chin_rest', 'b_mov_start', 'movie=bad', 30, 60, 'c7'),
+    RelaxableTPNConstraint('kor_rest', 'g_mov_start', 'movie=good', 30, 60, 'c8'),
+    RelaxableTPNConstraint('kor_rest', 'b_mov_start', 'movie=bad', 30, 60, 'c9'),
+    RelaxableTPNConstraint('g_mov_start', 'arrive_home', None, 90, 120, 'c10'),
+    RelaxableTPNConstraint('b_mov_start', 'arrive_home', None, 100, 120, 'c11'),
 ]
 
 def reward_func(assignments, decision_variables):
@@ -85,13 +77,24 @@ while True:
             selection = input()
             print("")
         if selection == '1':
+            print("Suggest new temporal bound (no relaxation):")
             start = input("Start event: ")
             end = input("End event: ")
             lb = float(input("Lower bound: "))
             ub = float(input("Upper bound: "))
-            constraint = TPNConstraint(start, end, None, lb, ub, f'u{tc_no}')
-            tc_no += 1
-            new_prob.add_temporal_constraint(constraint)
+            constraint_exists = False
+            for constraint in new_prob.temporal_constraints:
+                if constraint.s == start and constraint.e == end:
+                    constraint.lb = lb
+                    constraint.ub = ub
+                    constraint.lb_relaxable = False
+                    constraint.ub_relaxable = False
+                    constraint_exists = True
+                    break
+            if not constraint_exists:
+                constraint = RelaxableTPNConstraint(start, end, None, lb, ub, f'u{tc_no}')
+                tc_no += 1
+                new_prob.add_temporal_constraint(constraint)
         elif selection == '2':
             constraint = input("New assignment or constraint: ")
             new_prob.add_constraint(constraint)
@@ -113,19 +116,39 @@ while True:
                     var_name = assignment.var.name
                     original_val = original_assignment_dict[var_name]
                     if var_name in reward_func:
-                        reward_diff = reward_func[var_name][original_val] - reward_func[var_name][assignment.val]
-                        print(f"{var_name:>15}: {original_val + ' --> ' + assignment.val:>15}{'Diff: ' + str(-reward_diff):>15}")
-                        if reward_diff > max_reward_diff:
-                            max_reward_diff = reward_diff
-                            max_reward_diff_reason = f"changed assignment of {var_name} from {original_val} to {assignment.val}"
+                        if original_val != assignment.val:
+                            reward_diff = reward_func[var_name][original_val] - reward_func[var_name][assignment.val]
+                            print(f"{var_name:>15}: {original_val + ' --> ' + assignment.val:>30}{'Diff: ' + str(-reward_diff):>30}")
+                            if reward_diff > max_reward_diff:
+                                max_reward_diff = reward_diff
+                                max_reward_diff_reason = f"change assignment of {var_name} from {original_val} to {assignment.val}"
 
             if relaxations is not None:
-                relaxation_diff = original_relaxations.objective_value - relaxations.objective_value
-                if relaxation_diff > max_reward_diff:
-                    max_reward_diff = relaxation_diff
-                    max_reward_diff_reason = f"relaxation"
+                # relaxation_diff = original_relaxations.objective_value - relaxations.objective_value
+                for constraint, boundtype in relaxations.sol.keys():
+                    lb, ub = (constraint.lb, constraint.ub)
+                    old_lb, old_ub = (lb, ub)
+                    if boundtype == 'UB+':
+                        ub += relaxations.sol[(constraint, boundtype)]
+                    elif boundtype == 'LB-':
+                        lb -= relaxations.sol[(constraint, boundtype)]
+                    reward_diff = relaxations.sol[(constraint, boundtype)]
+                    if boundtype == 'UB+':
+                        reward_diff *= constraint.ub_lin_cost
+                    elif boundtype == 'LB-':
+                        reward_diff *= constraint.lb_lin_cost
+                    if original_relaxations is not None and (constraint, boundtype) in original_relaxations.sol:
+                        if boundtype == 'UB+':
+                            old_ub += original_relaxations.sol[(constraint, boundtype)]
+                        elif boundtype == 'LB-':
+                            old_lb -= original_relaxations.sol[(constraint, boundtype)]
+                        reward_diff -=  original_relaxations.sol[(constraint, boundtype)]
+                    print(f"{constraint.name:>15}: {str((old_lb, old_ub)) + ' --> ' + str((lb, ub)):>30}{'Diff: ' + str(-reward_diff):>30}")
+                    if reward_diff > max_reward_diff:
+                        max_reward_diff = reward_diff
+                        max_reward_diff_reason = f"relax {constraint.name} from {(old_lb, old_ub)} to {lb, ub}"
 
-            print(f"With {constraint}, {max_reward_diff_reason} leads to loss of reward by {max_reward_diff}.")
+            print(f"With your suggestion, we would have to {max_reward_diff_reason}, which leads to loss of reward by {max_reward_diff}.")
         else:
             print("Unfeasible due to conflicts:")
             for assignment, conflict in conflicts.items():
@@ -134,9 +157,9 @@ while True:
                     print(conflict)
                 print("")
 
-        resp = input("Reset to original problem? ")
-        if resp.upper()[0] == 'Y':
-            new_prob = copy.deepcopy(original_problem)
+        # resp = input("Reset to original problem? ")
+        # if resp.upper()[0] == 'Y':
+        #     new_prob = copy.deepcopy(original_problem)
 
     except ValueError:
         print("Incorrect type")
