@@ -9,6 +9,7 @@ from dc_checking.dc_be import DCCheckerBE
 from compute_relaxation import *
 import heapq
 import copy
+from collections import Counter
 
 
 class RelaxableTPNConstraint(TPNConstraint):
@@ -20,13 +21,27 @@ class RelaxableTPNConstraint(TPNConstraint):
         self.ub_lin_cost = ub_lin_cost
 
 class BCDRSolver(TPNSolver):
-    def __init__(self, reward_func):
-        super().__init__(reward_func)
+    def __init__(self, assignment_rewards):
+        super().__init__(assignment_rewards)
+        self.temporal_conflicts = {}
+
+    def reset(self):
+        super().reset()
+        self.temporal_conflicts = {}
+
+    def reward_func(self, assignments, relaxation):
+        reward = 0
+        for assignment in assignments:
+            if assignment.var.name in self.assignment_rewards:
+                reward += self.assignment_rewards[assignment.var.name].get(assignment.val, 0)
+        if relaxation is not None:
+            reward -= relaxation.objective_value
+        return reward
 
     def add_to_priority_queue(self, assignments, decision_variables, relaxations=None, relaxed_conflicts = frozenset()):
         # Calculate the f(x) = g(x) + h(x), an admissible
         # heuristic for this assignment
-        p = self.reward_func(assignments, decision_variables)
+        p = self.heuristic_func(assignments, decision_variables)
         if relaxations is not None:
             p -= relaxations.objective_value
         # Add to max priority queue (so negate)
@@ -66,6 +81,8 @@ class BCDRSolver(TPNSolver):
             conflicts = resolved_conflicts.union({new_conflict})
             if new_relaxations is not None:
                 neighbors.append((assignment, new_relaxations, conflicts))
+            else:
+                self.temporal_conflicts[assignment] = temporal_conflicts
 
         neighbors = [a for a in neighbors if is_self_consistent(a[0])]
         return neighbors
@@ -102,18 +119,15 @@ class BCDRSolver(TPNSolver):
                 exists, returns None.
         """
         # Set up
+        self.reset()
         self.sat_solver = SATSolver(self)
         decision_variables = self.get_decision_variables()
         self.add_to_priority_queue(frozenset(), decision_variables)
         while len(self.queue) > 0:
-            # print self.queue
             p, assignment, relaxations, resolved_conflicts = heapq.heappop(self.queue)
             print("Popped {} with p={}".format(assignment, -p))
-            # self.expanded.add((assignment, relaxations, resolved_conflicts))
-            # self.queue = [(p, a, r) for (p, a, r) in self.queue if a != assignment and r != relaxations] # Optional: remove any identical from self.queue
 
             current_conflict = self.resolve_known_conflicts(assignment, relaxations, resolved_conflicts)
-            print(current_conflict)
 
             if current_conflict is None:
                 if self.is_complete_assignment(assignment, decision_variables):
@@ -125,8 +139,8 @@ class BCDRSolver(TPNSolver):
                     else:
                         print(" --> Checking temporal consistency")
                         controllable, temporal_conflicts = self.check_temporal_consistency(assignment, relaxations)
-                        # print("TEMPORAL CONFLICT:", temporal_conflicts)
                         if not controllable:
+                            # self.temporal_conflicts.append((assignment, temporal_conflicts))
                             for temporal_conflict in temporal_conflicts:
                                 conflict = set()
                                 for constraint, boundtype in temporal_conflict:
@@ -139,7 +153,7 @@ class BCDRSolver(TPNSolver):
                             self.add_to_priority_queue(assignment, decision_variables, relaxations, resolved_conflicts)
                         else:
                             print(" --> Yep! Done.")
-                            return -p, assignment, relaxations # Use yield to make a generator and keep enumerating!!
+                            return True, self.reward_func(assignment, relaxations), assignment, relaxations, self.temporal_conflicts.copy()
 
                 else:
                     # assignment is not a full assignment
@@ -159,7 +173,7 @@ class BCDRSolver(TPNSolver):
                     self.add_to_priority_queue(neigh, decision_variables, relaxation, conflicts)
 
         # If we get here, no assignments found!
-        return None
+        return False, None, None, None, self.temporal_conflicts.copy()
 
 if __name__ == '__main__':
     # testing
@@ -167,29 +181,23 @@ if __name__ == '__main__':
         RelaxableTPNConstraint('e1', 'e2', None, 300, 400, 'c1', ub_relaxable=True, ub_lin_cost=1),
         TPNConstraint('e1', 'e3', None, 0, 0, 'c2'),
         TPNConstraint('e3', 'e4', None, 0, 0, 'c3'),
-        RelaxableTPNConstraint('e4', 'e5', 'path_choice=one', 405, 486, 'c4', lb_relaxable=True, lb_lin_cost=0.5),
+        RelaxableTPNConstraint('e4', 'e5', 'path_choice=one', 405, 486, 'c4', lb_relaxable=False, lb_lin_cost=0.5),
         TPNConstraint('e5', 'e8', None, 0, 0, 'c5'),
         TPNConstraint('e3', 'e6', None, 0, 0, 'c6'),
         TPNConstraint('e6', 'e7', 'path_choice=two', 405, 486, 'c7'),
         TPNConstraint('e7', 'e8', None, 0, 0, 'c8'),
         TPNConstraint('e8', 'e9', None, 0, 0, 'c9'),
-        RelaxableTPNConstraint('e9', 'e10', 'proceed=ok', 100, 200, 'c10', lb_relaxable=True, lb_lin_cost=0.5),
+        RelaxableTPNConstraint('e9', 'e10', 'proceed=ok', 100, 200, 'c10', lb_relaxable=False, lb_lin_cost=0.5),
         TPNConstraint('e10', 'e13', None, 0, 0, 'c11'),
         TPNConstraint('e8', 'e11', None, 0, 0, 'c12'),
-        TPNConstraint('e11', 'e12', None, 0, 2, 'c13'),
-        TPNConstraint('e13', 'e2', None, 0, 0, 'c14'),
+        TPNConstraint('e11', 'e12', 'proceed=not_ok', 0, 2, 'c13'),
+        TPNConstraint('e12', 'e13', None, 0, 0, 'c14'),
+        TPNConstraint('e13', 'e2', None, 0, 0, 'c15'),
     ]
 
-    def reward_func(assignments, decision_variables):
-        val = 0
-        for assignment in assignments:
-            if assignment.var.name == 'path_choice' and assignment.val == 'one':
-                val += 10
-            if assignment.var.name == 'proceed' and assignment.val == 'ok':
-                val += 1000
-        return val
+    assignment_rewards = {'path_choice': {'one': 10, 'two': 0}, 'proceed': {'ok': 1000, 'not_ok': 0}}
 
-    prob = BCDRSolver(reward_func)
+    prob = BCDRSolver(assignment_rewards)
     prob.add_variable('path1', type='finite_domain', domain=['ok', 'not_ok'], decision_variable=True)
     prob.add_variable('path2', type='finite_domain', domain=['ok', 'not_ok'], decision_variable=True)
     prob.add_variable('proceed', type='finite_domain', domain=['ok', 'not_ok'], decision_variable=True)
@@ -201,4 +209,25 @@ if __name__ == '__main__':
     prob.add_constraint('path2=not_ok => ~(path_choice=two)')
     for constraint in constraints:
         prob.add_temporal_constraint(constraint)
-    print("Solution:", prob.run())
+    # print("Solution:", prob.run())
+    solvable, reward, assignments, relaxations, conflicts = prob.run()
+
+    print("Known conflicts:", prob.known_conflicts)
+    c = Counter()
+    largest_intersection = None
+    for assignment, conflict in conflicts.items():
+        print("")
+        print(assignment)
+        for conflict in conflict:
+            print(conflict)
+            if largest_intersection is None:
+                largest_intersection = set((constraint.name, bt) for constraint, bt in conflict)
+            else:
+                largest_intersection = largest_intersection.intersection((constraint.name, bt) for constraint, bt in conflict)
+            for constraint, bt in conflict:
+                c[(constraint.name, bt)] += 1
+    print("")
+    print(c)
+    print(largest_intersection)
+
+    print("\nSolution:", reward, assignments, relaxations)

@@ -90,14 +90,37 @@ class TPNConstraint(SimpleTemporalConstraint):
 
 
 class TPNSolver(Problem):
-    def __init__(self, reward_func):
+    def __init__(self, assignment_rewards):
         super().__init__()
         self.temporal_constraints = []
-        self.candidate = None
         self.queue = []
         self.known_conflicts = []
-        self.reward_func = reward_func
+        self.assignment_rewards = assignment_rewards
         self.expanded = set()
+
+    def reset(self):
+        self.queue = []
+        self.known_conflicts = []
+        self.expanded = set()
+
+    def heuristic_func(self, assignments, decision_variables):
+        reward = 0
+        unassigned_vars = set(self.name_to_var.keys())
+        for assignment in assignments:
+            unassigned_vars.remove(assignment.var.name)
+            if assignment.var.name in self.assignment_rewards:
+                reward += self.assignment_rewards[assignment.var.name].get(assignment.val, 0)
+        for var_name in unassigned_vars:
+            if var_name in self.assignment_rewards:
+                reward += max(self.assignment_rewards[var_name].values())
+        return reward
+
+    def reward_func(self, assignments):
+        reward = 0
+        for assignment in assignments:
+            if assignment.var.name in self.assignment_rewards:
+                reward += self.assignment_rewards[assignment.var.name].get(assignment.val, 0)
+        return reward
 
     def add_temporal_constraint(self, constraint):
         if constraint.str_label is not None:
@@ -108,7 +131,7 @@ class TPNSolver(Problem):
     def add_to_priority_queue(self, assignments, decision_variables):
         # Calculate the f(x) = g(x) + h(x), an admissible
         # heuristic for this assignment
-        p = self.reward_func(assignments, decision_variables)
+        p = self.heuristic_func(assignments, decision_variables)
         # Add to max priority queue (so negate)
         heapq.heappush(self.queue, (-p, assignments))
 
@@ -165,6 +188,7 @@ class TPNSolver(Problem):
                 exists, returns None.
         """
         # Set up
+        self.reset()
         self.sat_solver = SATSolver(self)
         decision_variables = self.get_decision_variables()
         self.add_to_priority_queue(frozenset(), decision_variables)
@@ -230,7 +254,7 @@ if __name__ == '__main__':
         TPNConstraint('e1', 'e2', None, 450, 540, 'c1'),
         TPNConstraint('e1', 'e3', None, 0, 0, 'c2'),
         TPNConstraint('e3', 'e4', None, 0, 0, 'c3'),
-        TPNConstraint('e4', 'e5', 'path_choice=one', 405, 486, 'c4'),
+        TPNConstraint('e4', 'e5', 'path_choice=one', 550, 590, 'c4'),
         TPNConstraint('e5', 'e8', None, 0, 0, 'c5'),
         TPNConstraint('e3', 'e6', None, 0, 0, 'c6'),
         TPNConstraint('e6', 'e7', 'path_choice=two', 405, 486, 'c7'),
@@ -243,13 +267,9 @@ if __name__ == '__main__':
         TPNConstraint('e13', 'e2', None, 0, 0, 'c14'),
     ]
 
-    def reward_func(assignments, decision_variables):
-        for assignment in assignments:
-            if assignment.var.name == 'path_choice' and assignment.val == 'one':
-                return 10
-        return 0
+    assignment_rewards = {'path_choice': {'one': 10, 'two': 0}}
 
-    prob = TPNSolver(reward_func)
+    prob = TPNSolver(assignment_rewards)
     prob.add_variable('path1', type='finite_domain', domain=['ok', 'not_ok'], decision_variable=True)
     prob.add_variable('path2', type='finite_domain', domain=['ok', 'not_ok'], decision_variable=True)
     prob.add_variable('proceed', type='finite_domain', domain=['ok', 'not_ok'], decision_variable=True)
