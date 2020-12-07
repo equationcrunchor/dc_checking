@@ -1,10 +1,12 @@
 from bcdr import *
 import copy
 
+INFEASIBLE_RELAX_COST = 10000
+
 # example
 constraints = [
     RelaxableTPNConstraint('leave_work', 'arrive_home', None, 0, 180, 'c1'),
-    RelaxableTPNConstraint('leave_work', 'chin_rest', 'restaurant=chinese', 30, 120, 'c2', lb_relaxable=False, lb_lin_cost=10000),
+    RelaxableTPNConstraint('leave_work', 'chin_rest', 'restaurant=chinese', 30, 120, 'c2', lb_relaxable=False, lb_lin_cost=1000),
     RelaxableTPNConstraint('leave_work', 'kor_rest', 'restaurant=korean', 10, 120, 'c3'),
     RelaxableTPNConstraint('leave_work', 'g_mov_start', None, 40, 45, 'c4'),
     RelaxableTPNConstraint('leave_work', 'b_mov_start', None, 60, 65, 'c5'),
@@ -15,21 +17,6 @@ constraints = [
     RelaxableTPNConstraint('g_mov_start', 'arrive_home', None, 90, 120, 'c10'),
     RelaxableTPNConstraint('b_mov_start', 'arrive_home', None, 100, 120, 'c11'),
 ]
-
-def reward_func(assignments, decision_variables):
-    val = 600
-    for assignment in assignments:
-        if assignment.var.name == 'movie':
-            if assignment.val == 'good':
-                val -= 0
-            elif assignment.val == 'bad':
-                val -= 495
-        if assignment.var.name == 'restaurant':
-            if assignment.val == 'chinese':
-                val -= 0
-            elif assignment.val == 'korean':
-                val -= 50
-    return val
 
 reward_func = {
     'movie': {'good': 500, 'bad': 5},
@@ -67,6 +54,11 @@ original_assignments = assignments
 original_assignment_vars = set(assignment.var.name for assignment in original_assignments)
 original_assignment_dict = {assignment.var.name : assignment.val for assignment in original_assignments}
 original_relaxations = relaxations
+
+best_infeasible = False
+selection = input("Best infeasible heuristic? ")
+if selection.upper()[0] == 'Y':
+    best_infeasible = True
 while True:
     try:
         print("Suggest alternative:")
@@ -90,11 +82,13 @@ while True:
                     constraint.lb_relaxable = False
                     constraint.ub_relaxable = False
                     constraint_exists = True
+                    added_temporal_constraint = constraint
                     break
             if not constraint_exists:
                 constraint = RelaxableTPNConstraint(start, end, None, lb, ub, f'u{tc_no}')
                 tc_no += 1
                 new_prob.add_temporal_constraint(constraint)
+                added_temporal_constraint = constraint
         elif selection == '2':
             constraint = input("New assignment or constraint: ")
             new_prob.add_constraint(constraint)
@@ -150,17 +144,55 @@ while True:
 
             print(f"With your suggestion, we would have to {max_reward_diff_reason}, which leads to loss of reward by {max_reward_diff}.")
         else:
-            print("Unfeasible due to conflicts:")
-            for assignment, conflict in conflicts.items():
-                print(assignment)
-                for conflict in conflict:
-                    print(conflict)
+            if not best_infeasible:
+                print("Unfeasible due to conflicts:")
+                for assignment, conflict in conflicts.items():
+                    print(assignment)
+                    for conflict in conflict:
+                        print(conflict)
+                    print("")
+            else:
+                print("Your suggestion is not feasible.")
+                all_relaxable_prob = copy.deepcopy(new_prob)
+                for constraint in all_relaxable_prob.temporal_constraints:
+                    if selection == '1' and constraint.name == added_temporal_constraint.name:
+                        continue
+                    if not hasattr(constraint, "lb_relaxable") or constraint.lb_relaxable == False:
+                        constraint.lb_relaxable = True
+                        constraint.lb_lin_cost = INFEASIBLE_RELAX_COST
+                    if not hasattr(constraint, "ub_relaxable") or constraint.ub_relaxable == False:
+                        constraint.ub_relaxable = True
+                        constraint.ub_lin_cost = INFEASIBLE_RELAX_COST
+                print("Running algorithm...")
+                solvable, reward, assignments, relaxations, conflicts = all_relaxable_prob.run()
                 print("")
 
-        # resp = input("Reset to original problem? ")
-        # if resp.upper()[0] == 'Y':
-        #     new_prob = copy.deepcopy(original_problem)
+                max_reward_diff = 0
+                max_reward_diff_reason = None
+                for constraint, boundtype in relaxations.sol.keys():
+                    lb, ub = (constraint.lb, constraint.ub)
+                    old_lb, old_ub = (lb, ub)
+                    if boundtype == 'UB+':
+                        ub += relaxations.sol[(constraint, boundtype)]
+                    elif boundtype == 'LB-':
+                        lb -= relaxations.sol[(constraint, boundtype)]
+                    reward_diff = relaxations.sol[(constraint, boundtype)]
+                    if boundtype == 'UB+':
+                        reward_diff *= constraint.ub_lin_cost
+                    elif boundtype == 'LB-':
+                        reward_diff *= constraint.lb_lin_cost
+                    if original_relaxations is not None and (constraint, boundtype) in original_relaxations.sol:
+                        if boundtype == 'UB+':
+                            old_ub += original_relaxations.sol[(constraint, boundtype)]
+                        elif boundtype == 'LB-':
+                            old_lb -= original_relaxations.sol[(constraint, boundtype)]
+                        reward_diff -=  original_relaxations.sol[(constraint, boundtype)]
+                    # print(f"{constraint.name:>15}: {str((old_lb, old_ub)) + ' --> ' + str((lb, ub)):>30}{'Diff: ' + str(-reward_diff):>30}")
+                    if reward_diff > max_reward_diff:
+                        max_reward_diff = reward_diff
+                        max_reward_diff_reason = f"change {constraint.name} from {(old_lb, old_ub)} to {lb, ub}"
 
+                print(f"With your suggestion, we would have to {max_reward_diff_reason}.")
     except ValueError:
         print("Incorrect type")
     print("")
